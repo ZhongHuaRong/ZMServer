@@ -4,14 +4,20 @@
 #include<algorithm>
 #include <iostream>
 #include <stdlib.h>
+#include "HttpReq.h"
+#include "SMTP.h"
 
 std::list<TcpServer *> TcpServer::m_lthreadFd;
+std::list<TcpServer *> TcpServer::m_lPCThreadFd;
+std::list<TcpServer *> TcpServer::m_lAndThreadFd;
 pthread_mutex_t TcpServer::m_sMutex;
 int TcpServer::m_nlistenFd;
 struct sockaddr_in TcpServer::m_slistenAddr;
 
 TcpServer::TcpServer():
-    m_bActivation(false)
+    m_bActivation(false),
+    m_ePlat(NoSet),
+    m_bAuthorized(false)
 {
 }
 
@@ -57,11 +63,11 @@ void* TcpServer::run(void *arg)
     std::cout<<"server["<<server->getThreadFd()<<"] is running\n";
     std::cout<<"client count:"<<TcpServer::getClientCount()<<std::endl;
     int count;
-    char buf[50];
+    char buf[100];
     while(1)
     {
-        memset(buf,'0',50);
-        count=read(server->m_nSocketFd,buf,50);
+        memset(buf,'0',100);
+        count=read(server->m_nSocketFd,buf,100);
         if(count<=0)
         {
             perror("internet disconnected.\n");
@@ -87,7 +93,7 @@ void TcpServer::threadDestroy(TcpServer * server)
 {
     std::cout<<"server["<<server->getThreadFd()<<"] is destroy\n";
     //移除队列
-    listRemove(server);
+    listRemove(server,server->m_ePlat);
     //修改数据库状态
     server->userLogout(server);
     //关闭stocket
@@ -156,7 +162,7 @@ char const * TcpServer::getClientIP() const
 
 int TcpServer::getClientCount()
 {
-    return m_lthreadFd.size();
+    return m_lthreadFd.size() + m_lPCThreadFd.size() + m_lAndThreadFd.size();
 }
 
 int TcpServer::nSocketFd() const
@@ -214,21 +220,29 @@ void TcpServer::recognizeCmd(char *cmd)
      char *key_point;
      int n=0;
      int argCount = getCmdArgCount(cmd);
-     char *head;
+     char *head = nullptr;
      char *arg[argCount];
-     while(cmd&&n!=argCount+1)
-      {
-        key_point = strsep(&cmd,&ch);
-        if(n==0)
-        {
-            head = key_point;
-        }
-        else
-        {
-             arg[n-1] = key_point;
-        }
-        n++;
-      }
+//     while(cmd&&n!=argCount+1)
+//      {
+//        key_point = strsep(&cmd,&ch);
+//        if(n==0)
+//        {
+//            head = key_point;
+//        }
+//        else
+//        {
+//             arg[n-1] = key_point;
+//        }
+//        n++;
+//      }
+     key_point = cmd;
+     head = cmd;
+     while(key_point[0] !='\0')
+     {
+         arg[n] = m_dbMan.myStrsep(key_point,ch);
+         key_point = arg[n];
+         n++;
+     }
      translation(static_cast<CommandType>(*head),arg,argCount);
 }
 
@@ -266,14 +280,14 @@ int TcpServer::getCmdArgCount( char *cmd)
    *                        执行失败附带的错误信息
    * @date 2018-1
    */
-void TcpServer::sendCmd(TcpServer::CommandType cmd, bool result, const char *msg)
+void TcpServer::sendCmd(TcpServer::CommandType cmd, int result, const char *msg)
 {
     int msgLength = strlen(msg);
     //长度:前四位命令+msg长度+分隔符'$'+结束符'#'+字符串结尾'\0'
     char data[msg!=nullptr?msgLength+1:0+4+1+1];
     data[0] = cmd;
     data[1] ='$';
-    data[2] = result?'1':'0';
+    data[2] = result + '0';
     data[3] ='$';
     if(msg==nullptr)
     {
@@ -329,7 +343,7 @@ void TcpServer::sendMsg(TcpServer::CommandType cmd, int pageNum, int pageRow,int
         std::cout<<"测试用"<<std::endl;
         return;
     }
-    char msg[10+60*pageRow];
+    char msg[15+60*(pageRow+1)];
     msg[0]=static_cast<char>(cmd);
     msg[1]='$';
     if(isCheck)
@@ -384,6 +398,151 @@ void TcpServer::setServerState(bool state)
     this->m_bActivation = state;
 }
 
+void TcpServer::setPlatform(TcpServer::Platform plat)
+{
+    this->m_ePlat = plat;
+}
+
+/**
+   * @函数意义:登陆成功后需要的操作
+   * @作者:ZM
+   * @date 2018-2
+   */
+void TcpServer::setLoginSuccessMsg()
+{
+    setServerState(true);
+    m_nUserID = m_dbMan.nUserID();
+    threadListChanged(this,ePlat());
+}
+
+/**
+  * @函数意义:发送邮件和短信
+  * @作者:ZM
+  * @param [in] pushTemp
+  *             温度是否需要警告
+  * @param [in] pushPH
+  *             PH是否需要警告
+  * @param [in] pushTur
+  *             浑浊度是否需要警告
+  * @param [in] pushSMS
+  *             是否在手机端开启时发送短信
+  * @param [in] pushEmail
+  *             是否在手机端开启时发送邮件
+  * @param [in] phone
+  *             将要发送短信的手机号
+  * @param [in] email
+  *             将要发送邮件的邮箱
+  * @date 2018-3
+  */
+void TcpServer::sendSMSAndEmail(bool pushTemp, bool pushPH, bool pushTur,
+                                bool pushSMS, bool pushEmail,
+                                const char *phone, const char *email)
+{
+    std::cout<<"pushTemp:"<<pushTemp<<std::endl;
+    std::cout<<"pushPH:"<<pushPH<<std::endl;
+    std::cout<<"pushTur:"<<pushTur<<std::endl;
+    std::cout<<"pushSMS:"<<pushSMS<<std::endl;
+    std::cout<<"pushEmail:"<<pushEmail<<std::endl;
+    std::cout<<"phone:"<<phone<<std::endl;
+    std::cout<<"email:"<<email<<std::endl;
+
+    bool android = m_dbMan.checkAnotherPlatformExits(m_nUserID,true);
+    std::cout<<"signup_Android:"<<android<<std::endl;
+
+    if(android)
+    {
+        //安卓端登陆了
+        if(pushSMS)
+            sendSMS(pushTemp,pushPH,pushTur,phone);
+        if(pushEmail)
+            sendEmail(pushTemp,pushPH,pushTur,email);
+    }
+    else
+    {
+        sendSMS(pushTemp,pushPH,pushTur,phone);
+        sendEmail(pushTemp,pushPH,pushTur,email);
+    }
+}
+
+/**
+   * @函数意义:发送短信
+   * @作者:ZM
+  * @param [in] pushTemp
+  *             温度是否需要警告
+  * @param [in] pushPH
+  *             PH是否需要警告
+  * @param [in] pushTur
+  *             浑浊度是否需要警告
+  * @param [in] phone
+  *             将要发送短信的手机号
+   * @date 2018-3
+   */
+void TcpServer::sendSMS(bool pushTemp, bool pushPH, bool pushTur, const char *phone)
+{
+    if( !pushTemp && !pushPH && !pushTur)
+        return;
+
+    HttpRequest *http;
+    char http_return[4096];
+    char http_msg[4096];
+
+    sprintf(http_msg,"http://api.sms.cn/sms/?ac=send&"
+            "uid=zhr18814125877&pwd=524651da822cd7930d87b8df505264b7&"
+             "mobile=%s&content=您好！你所管理的鱼塘出现异常数据，请尽快去查看【LWMAMS】",phone);
+
+    //短信需要收费,所以再需要的时候才取消注释演示一波
+//    if(http->HttpGet(http_msg,http_return))
+//    {
+//        std::cout << http_return << std::endl;
+//    }
+}
+
+/**
+   * @函数意义:发送邮件
+   * @作者:ZM
+  * @param [in] pushTemp
+  *             温度是否需要警告
+  * @param [in] pushPH
+  *             PH是否需要警告
+  * @param [in] pushTur
+  *             浑浊度是否需要警告
+  * @param [in] email
+  *             将要发送邮件的邮箱
+   * @date 2018-3
+   */
+void TcpServer::sendEmail(bool pushTemp, bool pushPH, bool pushTur, const char *email)
+{
+    if( !pushTemp && !pushPH && !pushTur)
+        return;
+
+    char msg[50];
+    strcpy(msg,"");
+    bool isStart = true;
+    if(pushTemp)
+    {
+        strcat(msg,"温度");
+        isStart = false;
+    }
+    if(pushPH)
+    {
+        strcat(msg,isStart?"酸碱度":",酸碱度");
+        isStart = false;
+    }
+    if(pushTur)
+    {
+        strcat(msg,isStart?"浑浊度":",浑浊度");
+    }
+    char data[300];
+    sprintf(data,"亲爱的用户:\n"
+                 "您好!\n"
+                 "你所管理的鱼塘出现异常数据(%s),请您有空就去PC端或者安卓端查看!!!\n"
+                 "想进入网页端查看请点击(http://119.29.243.183/111/index6.php)\n"
+                 "LWMAMS开发人员",msg);
+
+    SMTP smtp;
+    //smtp.sendEmail(email,data);
+}
+
 /**
    * @函数意义:翻译命令,运行相应的操作
    * @作者:ZM
@@ -401,27 +560,34 @@ void TcpServer::translation(CommandType cmd, char **arg,int count)
     for(int a=0;a<count;a++)
         std::cout<<*(arg+a)<<std::endl;
 
-    std::cout<<this->bActivation()<<std::endl;
-    std::cout<<count<<std::endl;
+    std::cout<<"bActivation:"<<this->bActivation()<<std::endl;
+    //std::cout<<count<<std::endl;
     //用户未激活且CT不是登陆则不判断了,未激活只允许服务器发命令和只接受登陆,注册指令
-    if(cmd!=CT_SIGNUP&&cmd!=CT_SIGNUPAUTO&&cmd!=CT_PARACHECKACCOUNTNUMBER&&cmd!=CT_REGISTERED)
+    if(cmd!=CT_SIGNUP&&cmd!=CT_SIGNUPAUTO&&cmd!=CT_AUTHORIZEDSIGNUP&&
+            cmd!=CT_AUTHORIZEDSIGNUPRESULT&&cmd!=CT_PARACHECKACCOUNTNUMBER&&cmd!=CT_REGISTERED
+            &&cmd!=CT_EMAILCODE&&cmd!=CT_CHANGEPASSWORD)
         if(!this->bActivation())
             return;
+
+//    std::cout<<"NOSET:"<<m_lthreadFd.size()<<std::endl;
+//    std::cout<<"A:"<<m_lAndThreadFd.size()<<std::endl;
+//    std::cout<<"P:"<<m_lPCThreadFd.size()<<std::endl;
+
     switch(cmd)
     {
     case CT_SIGNUP:
     case CT_SIGNUPAUTO:
     {
-        DBManagement::SIGNUPERRORCODE code =m_dbMan.signup(arg[0],arg[1]);
+        setEPlat(static_cast<Platform>(atoi(arg[0])));
+        DBManagement::SIGNUPERRORCODE code =m_dbMan.signup(ePlat() ==PC?true:false,arg[1],arg[2]);
         const char *str;
         bool result;
         switch(code)
         {
         case DBManagement::NOERROR:
-            str="sign up success";
+            str=m_dbMan.getUserName();
             result =true;
-            setServerState(true);
-            m_nUserID = m_dbMan.nUserID();
+            setLoginSuccessMsg();
             break;
         case DBManagement::USERNOTFOUND:
             str="user not found";
@@ -436,15 +602,87 @@ void TcpServer::translation(CommandType cmd, char **arg,int count)
             result =true;
             m_nUserID = m_dbMan.nUserID();
             //先让存在的登陆者退出
-            TcpServer::userLogout(m_nUserID);
+            TcpServer::userLogout(m_nUserID,ePlat());
 
-            setServerState(true);
+            setLoginSuccessMsg();
             break;
         default:
             result =false;
             str="unknow error";
         }
         sendCmd(cmd,result,str);
+        break;
+    }
+    case CT_AUTHORIZEDSIGNUP:
+    {
+        setEPlat(static_cast<Platform>(atoi(arg[0])));
+        int id = m_dbMan.checkAnotherPlatformExits(arg[1],ePlat() ==PC?true:false);
+        m_nUserID = id;
+
+        if(id)
+        {
+            int size;
+            TcpServer *server;
+            Platform plat = ePlat()==PC?Android:PC;
+            switch(plat)
+            {
+            case PC:
+                size = m_lPCThreadFd.size();
+                break;
+            case Android:
+                size = m_lAndThreadFd.size();
+                break;
+            case NoSet:
+                size = m_lthreadFd.size();
+                break;
+            }
+
+            for(int n=0;n<size;n++)
+            {
+                server =findUserIDFromList(id,&n,plat);
+//                std::cout<<"id:"<<id<<std::endl;
+//                std::cout<<"bActivation:"<<server->bActivation()<<std::endl;
+                if(server!=nullptr&&server->bActivation()==true)
+                {
+                    server->sendCmd(CT_AUTHORIZEDSIGNUP,1,"其他设备要求登陆该账号,是否同意");
+                    this->setBAuthorized(true);
+                    return;
+                }
+            }
+        }
+        else
+        {
+            sendCmd(CT_AUTHORIZEDSIGNUP,0,"用户未登录");
+        }
+        break;
+    }
+    case CT_AUTHORIZEDSIGNUPRESULT:
+    {
+        int size;
+        TcpServer *server;
+        size = m_lthreadFd.size();
+
+        for(int n=0;n<size;n++)
+        {
+            server =findUserIDFromList(this->m_dbMan.nUserID(),&n,NoSet);
+            //std::cout<<"id:"<<this->m_dbMan.nUserID()<<std::endl;
+            //std::cout<<"authorized:"<<server->bAuthorized()<<std::endl;
+            if(server!=nullptr&&server->bAuthorized()==true)
+            {
+                server->setBAuthorized(false);
+
+                server->m_dbMan.setUserID(this->m_dbMan.nUserID());
+                bool result = atoi(arg[0]);
+                if(result)
+                {
+                    server->setLoginSuccessMsg();
+                    server->m_dbMan.authorizedStateChanged(server->ePlat()==PC?true:false,true,server->m_nUserID);
+                }
+                server->sendCmd(CT_AUTHORIZEDSIGNUPRESULT,result,result?"登陆成功":"拒绝授权");
+
+                return;
+            }
+        }
         break;
     }
     case CT_USERSLOGINELSEWHERE:
@@ -463,14 +701,47 @@ void TcpServer::translation(CommandType cmd, char **arg,int count)
         }
         break;
     }
+    case CT_EMAILCODE:
+    {
+        const char *email = m_dbMan.getEmail(arg[0]);
+        if(strlen(email)==0)
+        {
+            sendCmd(CT_EMAILCODE,false,"user not found");
+            return;
+        }
+
+        SMTP smtp;
+        char data[400];
+        sprintf(data,"亲爱的用户:\n"
+                     "您好!\n"
+                     "感谢你使用LWMAMS服务.您正在进行邮箱验证,请在验证码输入框输入此验证码:\n"
+                     "%s 以完成验证\n"
+                     "为了账号安全请不要泄露该验证码\n"
+                     "如非本人操作,请忽略此邮件,由此给您带来的不便请谅解!\n"
+                     "LWMAMS开发人员",arg[1]);
+        smtp.sendEmail(email,data,"LWMAMS邮箱身份验证");
+        break;
+    }
+    case CT_CHANGEPASSWORD:
+    {
+        if(m_dbMan.changePW(arg[0],arg[1]))
+        {
+            sendCmd(CT_CHANGEPASSWORD,true,"not error");
+        }
+        else
+        {
+            sendCmd(CT_CHANGEPASSWORD,false,"registration failed");
+        }
+        break;
+    }
     case CT_REGISTERED:
     {
-        if(count<3)
+        if(count<4)
         {
             sendCmd(CT_REGISTERED,false,"Too few parameters");
             break;
         }
-        if(m_dbMan.registered(arg[0],arg[1],arg[2]))
+        if(m_dbMan.registered(arg[0],arg[1],arg[2],arg[3]))
         {
             sendCmd(CT_REGISTERED,true,"not error");
         }
@@ -482,13 +753,39 @@ void TcpServer::translation(CommandType cmd, char **arg,int count)
     }
     case CT_DATASHOW:
     case CT_ROUTE:
-    case CT_STATISTICS:
     case CT_CONTROL:
     {
         if(count<3)
             sendMsg(cmd,atoi(arg[0]),atoi(arg[1]));
         else
             sendMsg(cmd,atoi(arg[0]),atoi(arg[1]),atoi(arg[2]),arg[3][0]-'0',arg[4][0],arg[5][0],arg[6]);
+        break;
+    }
+    case CT_STATISTICS:
+    {
+        if(count<10)
+            return;
+        char msg[512];
+        msg[0]=static_cast<char>(CT_STATISTICS);
+        msg[1]='$';
+        m_dbMan.findStatisticsDataAndSend(arg[0],arg[1],arg[2],arg[3],
+                                                                        atof(arg[4]),atof(arg[5]),
+                                                                        atof(arg[6]),atof(arg[7]),
+                                                                        atof(arg[8]),atof(arg[9]),
+                                                                        msg+2);
+
+        int num=write(m_nSocketFd, msg, strlen(msg));
+        std::cout<<"写入成功字节:"<<num<<std::endl;
+        break;
+    }
+    case CT_ANDROIDDATASHOW:
+    {
+        sendMsg(cmd,atoi(arg[0]),atoi(arg[1]));
+        break;
+    }
+    case CT_SMSEMAILPUSH:
+    {
+        sendSMSAndEmail(arg[0][0]-'0',arg[1][0]-'0',arg[2][0]-'0',arg[3][0]-'0',arg[4][0]-'0',arg[5],arg[6]);
         break;
     }
     default:
@@ -521,12 +818,25 @@ void TcpServer::closeStocket()
    * @作者:ZM
    * @param [in] fd
    *                线程对象指针
+   * @param [in] plat
+   *                        相应的平台
    * @date 2018-1
    */
-void TcpServer::listRemove(TcpServer* fd)
+void TcpServer::listRemove(TcpServer* fd,Platform plat)
 {
     pthread_mutex_lock(&TcpServer::m_sMutex);//上锁
-    TcpServer::m_lthreadFd.remove(fd);
+    switch(plat)
+    {
+    case PC:
+        TcpServer::m_lPCThreadFd.remove(fd);
+        break;
+    case Android:
+        TcpServer::m_lAndThreadFd.remove(fd);
+        break;
+    case NoSet:
+        TcpServer::m_lthreadFd.remove(fd);
+        break;
+    }
     pthread_mutex_unlock(&TcpServer::m_sMutex);//解锁
 }
 
@@ -535,13 +845,43 @@ void TcpServer::listRemove(TcpServer* fd)
    * @作者:ZM
    * @param [in] fd
    *                线程对象指针
+   * @param [in] plat
+   *                        相应的平台
    * @date 2018-1
    */
-void TcpServer::listCreate(TcpServer* fd)
+void TcpServer::listCreate(TcpServer* fd,Platform plat)
 {
     pthread_mutex_lock(&TcpServer::m_sMutex);//上锁
-    TcpServer::m_lthreadFd.push_back(fd);
+    switch(plat)
+    {
+    case PC:
+        TcpServer::m_lPCThreadFd.push_back(fd);
+        break;
+    case Android:
+        TcpServer::m_lAndThreadFd.push_back(fd);
+        break;
+    case NoSet:
+        TcpServer::m_lthreadFd.push_back(fd);
+        break;
+    }
     pthread_mutex_unlock(&TcpServer::m_sMutex);//解锁
+}
+
+/**
+   * @函数意义:用户登陆后,将fd移到相应的list,到时候授权登陆方便
+   * @作者:ZM
+   * @param [in] fd
+   *                        线程对象指针
+   * @param [in] plat
+   *                        相应的平台
+   * @date 2018-2
+   */
+void TcpServer::threadListChanged(TcpServer *fd,Platform plat)
+{
+    //移除自己
+    listRemove(fd);
+    //添加自己
+    listCreate(fd,plat);
 }
 
 /**
@@ -549,17 +889,32 @@ void TcpServer::listCreate(TcpServer* fd)
    * @作者:ZM
    * @param [in] userID
    *                        通过这个用户id找出server对象,通知其退出
+   * @param [in] plat
+   *                        平台,不同的平台操作不同的list
    * @date 2018-1
    */
-void TcpServer::userLogout(int userID)
+void TcpServer::userLogout(int userID,Platform plat)
 {
     TcpServer *server;
 
-    int size = m_lthreadFd.size();
+    int size = 0;
+    switch(plat)
+    {
+    case PC:
+        size = m_lPCThreadFd.size();
+        break;
+    case Android:
+        size = m_lAndThreadFd.size();
+        break;
+    case NoSet:
+        size = m_lthreadFd.size();
+        break;
+    }
+
     for(int n=0;n<size;n++)
     {
-        server =findUserIDFromList(userID,&n);
-        std::cout<<n<<std::endl;
+        server =findUserIDFromList(userID,&n,plat);
+        //std::cout<<n<<std::endl;
         //std::cout<<"bActivation:"<<server->bActivation()<<std::endl;
         if(server!=nullptr&&server->bActivation()==true)
         {
@@ -580,7 +935,7 @@ void TcpServer::userLogout(TcpServer *server)
 {
     //未登录用户和被挤下用户退出也会调用,所以需要判断是否时正常登陆用户
     if(server->bActivation())
-        server->m_dbMan.userLogout();
+        server->m_dbMan.userLogout(server->m_ePlat==PC?true:false);
 }
 
 /**
@@ -590,17 +945,37 @@ void TcpServer::userLogout(TcpServer *server)
    *                        用户的ID
    * @param [in] startNum
    *                        开始查找的位置,设为指针是为了让元素的位置得到记录
+   * @param [in] plat
+   *                        所在的平台
    * @date 2018-1
    */
-TcpServer* TcpServer::findUserIDFromList(int userID,int *startNum)
+TcpServer* TcpServer::findUserIDFromList(int userID,int *startNum,Platform plat)
 {
-    if(*startNum>=TcpServer::m_lthreadFd.size())
-        return nullptr;
+//    if(*startNum>=TcpServer::m_lthreadFd.size())
+//        return nullptr;
     pthread_mutex_lock(&TcpServer::m_sMutex);//上锁
     TcpServer *server;
     std::list<TcpServer*>::iterator it;
+    std::list<TcpServer*>::iterator end;
+
+    switch(plat)
+    {
+    case PC:
+        it = TcpServer::m_lPCThreadFd.begin();
+        end = TcpServer::m_lPCThreadFd.end();
+        break;
+    case Android:
+        it = TcpServer::m_lAndThreadFd.begin();
+        end = TcpServer::m_lAndThreadFd.end();
+        break;
+    case NoSet:
+        it = TcpServer::m_lthreadFd.begin();
+        end = TcpServer::m_lthreadFd.end();
+        break;
+    }
+
     int n=0;
-    for(it = TcpServer::m_lthreadFd.begin();it!=TcpServer::m_lthreadFd.end();it++,n++)
+    for(;it!=end;it++,n++)
     {
         if(n<*startNum)
             continue;
@@ -614,6 +989,28 @@ TcpServer* TcpServer::findUserIDFromList(int userID,int *startNum)
     pthread_mutex_unlock(&TcpServer::m_sMutex);//解锁
     return nullptr;
 }
+
+bool TcpServer::bAuthorized() const
+{
+    return m_bAuthorized;
+}
+
+void TcpServer::setBAuthorized(bool bAuthorized)
+{
+    m_bAuthorized = bAuthorized;
+}
+
+
+TcpServer::Platform TcpServer::ePlat() const
+{
+    return m_ePlat;
+}
+
+void TcpServer::setEPlat(const Platform &ePlat)
+{
+    m_ePlat = ePlat;
+}
+
 
 bool TcpServer::bActivation() const
 {

@@ -19,16 +19,26 @@ public:
     enum CommandType{
         CT_SIGNUP = 0x10,
         CT_SIGNUPAUTO,
+        CT_AUTHORIZEDSIGNUP,
+        CT_AUTHORIZEDSIGNUPRESULT,
         CT_USERSLOGINELSEWHERE,
         CT_PARACHECKACCOUNTNUMBER,
-        CT_PARACHECKAPPID,
+        CT_EMAILCODE,
+        CT_CHANGEPASSWORD,
         CT_REGISTERED,
         CT_DATASHOW,
         CT_ROUTE,
         CT_CONTROL,
-        CT_STATISTICS
+        CT_STATISTICS,
+        CT_ANDROIDDATASHOW,
+        CT_SMSEMAILPUSH
     };
 
+    enum Platform{
+        PC = 0x01,
+        Android,
+        NoSet
+    };
 public:
     TcpServer();
 
@@ -51,6 +61,12 @@ public:
 
     bool bActivation() const;
 
+    Platform ePlat() const;
+    void setEPlat(const Platform &ePlat);
+
+    bool bAuthorized() const;
+    void setBAuthorized(bool bAuthorized);
+
 private:
     void setClientIP();
     void closeStocket();
@@ -61,21 +77,33 @@ private:
     void updateUserActivation(bool updateDB);
     void translation(CommandType cmd,char **arg,int count);
     void sendCmd(CommandType cmd,bool result);
-    void sendCmd(CommandType cmd,bool result,const char *msg = nullptr);
+    void sendCmd(CommandType cmd,int result,const char *msg = nullptr);
     void sendMsg(CommandType cmd,int pageNum,int pageRow,int testFlag = 0,
                  bool isCheck =false,char dataType = 1,char compare = 1,char * checkData = nullptr);
     void sendTest(int testFlag);
     void setServerState(bool state);
+    void setPlatform(Platform plat);
+    void setLoginSuccessMsg();
+    void sendSMSAndEmail(bool pushTemp, bool pushPH, bool pushTur,
+                         bool pushSMS, bool pushEmail,
+                         const char *phone, const  char *email);
+    void sendSMS(bool pushTemp, bool pushPH, bool pushTur,const char *phone);
+    void sendEmail(bool pushTemp, bool pushPH, bool pushTur,const char *email);
 
-    static void listRemove(TcpServer* fd);
-    static void listCreate(TcpServer* fd);
-    static void userLogout(int userID);
+    static void listRemove(TcpServer* fd,Platform plat = NoSet);
+    static void listCreate(TcpServer* fd,Platform plat = NoSet);
+    static void threadListChanged(TcpServer *fd,Platform plat);
+    static void userLogout(int userID,Platform plat);
     static void userLogout(TcpServer* server);
-    static TcpServer* findUserIDFromList(int userID,int* startNum);
+    static TcpServer* findUserIDFromList(int userID,int* startNum,Platform plat);
 
 private:
-    //为了实现挤用户功能,后面登陆的把前者挤下去
+    //未登录已连接的用户放在这里
     static std::list<TcpServer *> m_lthreadFd;
+    //为了实现双平台登陆
+    static std::list<TcpServer *> m_lPCThreadFd;
+    static std::list<TcpServer *> m_lAndThreadFd;
+
     //声明互斥量
     static pthread_mutex_t m_sMutex;
 
@@ -85,6 +113,11 @@ private:
 
     //判断是否激活,默认false,非激活状态服务器不发送任何指令
     bool m_bActivation;
+    //判断是否是PC端,不同平台会有不同处理
+    Platform m_ePlat;
+    //标示该客户端是否在等待授权
+    bool m_bAuthorized;
+
     int m_nSocketFd;
     struct sockaddr_in m_sclientAddr;
     char m_cipstr[16];

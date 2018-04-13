@@ -4,6 +4,8 @@
 #include <iostream>
 #include <math.h>
 #include <stdlib.h>
+#include <sstream>
+#include "md5.h"
 
 #define DBROOT "wbh"
 #define DBIP "119.29.243.183"
@@ -56,14 +58,18 @@ void DBManagement::destroy()
    * @函数意义:用户登录验证,返回成功或者失败
    *                      加点有意思的东西,先查找用户名,如果存在则对比密码,返回对应的错误码
    * @作者:ZM
+   * @param [in] plat
+   *                        平台,true为PC,否则为Android
    * @param [in] accountNumber
    *                        账号
    * @param [in] pw
    *                        密码
    * @date 2018-1
    */
-DBManagement::SIGNUPERRORCODE DBManagement::signup(const char *accountNumber, const char *pw)
+DBManagement::SIGNUPERRORCODE DBManagement::signup(const bool plat,const char *accountNumber, const char *pw)
 {
+    const char * sql = "set names \'utf8\'";
+    mysql_query(&m_mysql, sql);
     char query[100];
     sprintf(query,"select * from User where accountNumber = '%s';",accountNumber);
     //std::cout<<query<<std::endl;
@@ -78,17 +84,18 @@ DBManagement::SIGNUPERRORCODE DBManagement::signup(const char *accountNumber, co
         {
             m_row = mysql_fetch_row(m_pRes);
             char * r=m_row[indexOfColumnName("password")];
-            bool loggedin=*m_row[indexOfColumnName("signup")];
-            //printf("loggedin:%d\n",*m_row[indexOfColumnName("signup")]);
+            bool loggedin=*m_row[indexOfColumnName(plat?"signup_pc":"signup_android")];
+            printf("loggedin:%d\n",loggedin);
             m_nUserID = string2int(m_row[indexOfColumnName("id")]);
+            strcpy(m_sUserName,m_row[indexOfColumnName("userName")]);
             mysql_free_result(m_pRes);
-            if(0==strcmp(r,pw))
+            if(0==strcmp(r,MD5(pw).toString().c_str()))
             {
                 if(loggedin)
                     return USERHASLOGGEDIN;
                 else
                 {
-                    updateUserLoginState(true);
+                    updateUserLoginState(plat,true);
                     return NOERROR;
                 }
             }
@@ -108,6 +115,105 @@ DBManagement::SIGNUPERRORCODE DBManagement::signup(const char *accountNumber, co
 }
 
 /**
+   * @函数意义:通过账号查找新用户名
+   * @作者:ZM
+   * @param [in] accountNumber
+   *                        账号
+   * @date 2018-2
+   */
+const char *DBManagement::getNewUserName(const char *accountNumber)
+{
+    const char * sql = "set names \'utf8\'";
+    mysql_query(&m_mysql, sql);
+    char query[100];
+    sprintf(query,"select * from User where accountNumber = '%s';",accountNumber);
+    //std::cout<<query<<std::endl;
+    mysql_real_query(&m_mysql,query,(unsigned int) strlen(query));
+    m_pRes = mysql_store_result(&m_mysql);
+    int rowCount;
+    if(m_pRes)
+     {
+        rowCount = mysql_num_rows(m_pRes);//行
+
+        if(rowCount!=0)
+        {
+            m_row = mysql_fetch_row(m_pRes);
+            strcpy(m_sUserName,m_row[indexOfColumnName("userName")]);
+            mysql_free_result(m_pRes);
+            return m_sUserName;
+        }
+        else
+        {
+            mysql_free_result(m_pRes);
+            return "";
+        }
+    }
+}
+
+/**
+   * @函数意义:通过账号查找邮箱
+   * @作者:ZM
+   * @param [in] accountNumber
+   *                        账号
+   * @date 2018-3
+   */
+const char *DBManagement::getEmail(const char *accountNumber)
+{
+    const char * sql = "set names \'utf8\'";
+    mysql_query(&m_mysql, sql);
+    char query[100];
+    sprintf(query,"select * from User where accountNumber = '%s';",accountNumber);
+    //std::cout<<query<<std::endl;
+    mysql_real_query(&m_mysql,query,(unsigned int) strlen(query));
+    m_pRes = mysql_store_result(&m_mysql);
+    int rowCount;
+    if(m_pRes)
+     {
+        rowCount = mysql_num_rows(m_pRes);//行
+
+        if(rowCount!=0)
+        {
+            m_row = mysql_fetch_row(m_pRes);
+            strcpy(m_sEmail,m_row[indexOfColumnName("email")]);
+            mysql_free_result(m_pRes);
+            return m_sEmail;
+        }
+        else
+        {
+            mysql_free_result(m_pRes);
+            return "";
+        }
+    }
+}
+
+/**
+   * @函数意义:返回旧的用户名(登陆时保存的用户名)
+   * @作者:ZM
+   * @date 2018-2
+   */
+char *DBManagement::getUserName()
+{
+    return m_sUserName;
+}
+
+/**
+   * @函数意义:修改授权登陆的数据库状态
+   * @作者:ZM
+   * @param [in] plat
+   *                        平台,true为PC
+   * @param [in] state
+   *                        状态
+   * @param [in] userID
+   *                        用户ID,提前设好
+   * @date 2018-2
+   */
+void DBManagement::authorizedStateChanged(const bool plat, const bool state,int userID)
+{
+    m_nUserID = userID;
+    updateUserLoginState(plat,state);
+}
+
+/**
    * @函数意义:注册新用户
    * @作者:ZM
    * @param [in]    accountNumber
@@ -116,15 +222,45 @@ DBManagement::SIGNUPERRORCODE DBManagement::signup(const char *accountNumber, co
    *                        密码
    * @param [in] userName
    *                        用户名
+   * @param [in] email
+   *                        邮箱
    * @date 2018-1
    */
-bool DBManagement::registered(const char *accountNumber, const char *pw, const char *userName)
+bool DBManagement::registered(const char *accountNumber, const char *pw, const char *userName,const char *email)
 {
-    char * sql = "set names \'utf8\'";
+    const char * sql = "set names \'utf8\'";
     mysql_query(&m_mysql, sql);
 
-    char query[100];
-    sprintf(query,"insert into User(accountNumber,password,userName) values('%s','%s','%s');",accountNumber,pw,userName);
+    char query[150];
+    sprintf(query,"insert into User(accountNumber,password,userName,email) values('%s','%s','%s','%s');",
+            accountNumber,MD5(pw).toString().c_str(),userName,email);
+    std::cout<<query<<std::endl;
+    int ret=mysql_real_query(&m_mysql,query,(unsigned int) strlen(query));
+    if(ret)
+     {
+        return false;
+     }
+    else
+        return true;
+}
+
+/**
+   * @函数意义:修改密码
+   * @作者:ZM
+   * @param [in]    accountNumber
+   *                        帐号名
+   * @param [in] pw
+   *                        密码
+   * @date 2018-1
+   */
+bool DBManagement::changePW(const char *accountNumber, const char *pw)
+{
+    const char * sql = "set names \'utf8\'";
+    mysql_query(&m_mysql, sql);
+
+    char query[150];
+    sprintf(query,"UPDATE  User SET password = '%s' WHERE accountNumber = '%s';",
+            MD5(pw).toString().c_str(),accountNumber);
     std::cout<<query<<std::endl;
     int ret=mysql_real_query(&m_mysql,query,(unsigned int) strlen(query));
     if(ret)
@@ -242,6 +378,7 @@ void DBManagement::findDataAndCheck(char *returnData, int pageNum, int pageRow,
     pagingQuery(returnData,query,query2,pageNum,pageRow);
 }
 
+
 /**
    * @函数意义:查找测试用数据
    * @作者:ZM
@@ -290,16 +427,234 @@ void DBManagement::findTestData(char *returnData, int testFlag)
 }
 
 /**
+   * @函数意义:
+   * @作者:ZM
+   * @param [in] dataType
+   *                        数据类型
+   * @param [in] dateType
+   *                        日期类型
+   * @param [in] dateTime
+   *                        日期(将会修改该字符串)
+   * @param [in] showType
+   *                        将要显示的格式(abnormal则查找boat_data,control则查找control_data)
+   * @param [in] 剩下的
+   *                        异常范围
+   * @param [in] msg
+   *                        保存返回的数据
+   * @date 2018-3
+   */
+void DBManagement::findStatisticsDataAndSend(const char *datatype,
+                                                                                    const char *dateType,
+                                                                                    char *dateTime,
+                                                                                    const char *showType,
+                                                                                    const float &tempMax,
+                                                                                    const float &tempMin,
+                                                                                    const float &phMax,
+                                                                                    const float &phMin,
+                                                                                    const float &turMax,
+                                                                                    const float &turMin,
+                                                                                    char * msg)
+{
+    char ch('-');
+    char *year = nullptr;
+    char *month = nullptr;
+    char *day = nullptr;
+
+    year = dateTime;
+    month = myStrsep(year,ch);
+    day = myStrsep(month,ch);
+
+    char sql[512];
+    char table_name[10];
+    strcpy(sql,"");
+    strcpy(msg,"");
+
+    if(strcmp(showType,"abnormal")==0)
+    {
+        strcpy(table_name,"boat_data");
+        char dataT[10];
+        float max,min;
+        if(strcmp(datatype,"temp")==0)
+        {
+            strcpy(dataT,"t_data");
+            max = tempMax;
+            min = tempMin;
+        }
+        else if(strcmp(datatype,"ph")==0)
+        {
+            strcpy(dataT,"ph_data");
+            max = phMax;
+            min = phMin;
+        }
+        else if(strcmp(datatype,"tur")==0)
+        {
+            strcpy(dataT,"tds_data");
+            max = turMax;
+            min = turMin;
+        }
+
+        if(strcmp(dateType,"day")==0)
+        {
+            sprintf(sql,"select count(*) from %s where "
+                        "year(time) = %s and month(time) = %s and day(time) = %s "
+                        "and %s %s %f",table_name,year,month,day,dataT,">",max );
+            int count;
+            char strCount[10];
+            count = getCountFromSql(sql);
+            std::cout<<"count:"<<count<<std::endl;
+            strcat(msg,int2str(count,strCount));
+            strcat(msg,"^");
+
+            sprintf(sql,"select count(*) from %s where "
+                        "year(time) = %s and month(time) = %s and day(time) = %s "
+                        "and %s %s %f",table_name,year,month,day,dataT,"<",min );
+            count = getCountFromSql(sql);
+            std::cout<<"count:"<<count<<std::endl;
+            strcat(msg,int2str(count,strCount));
+            strcat(msg,"^");
+
+            sprintf(sql,"select count(*) from %s where  "
+                        "year(time) = %s and month(time) = %s and day(time) = %s "
+                        ,table_name, year,month,day );
+            count = getCountFromSql(sql);
+            std::cout<<"count:"<<count<<std::endl;
+            strcat(msg,int2str(count,strCount));
+            strcat(msg,"^");
+
+            strcat(msg,"$");
+        }
+        else if(strcmp(dateType,"month")==0)
+        {
+            int count;
+            char strCount[10];
+
+            sprintf(sql,"select count(*) from %s where year(time) = %s and month(time) = %s "
+                        "and %s %s %f",table_name,year,month,dataT,">",max );
+            count = getCountFromSql(sql);
+            std::cout<<"count:"<<count<<std::endl;
+            strcat(msg,int2str(count,strCount));
+            strcat(msg,"^");
+
+            sprintf(sql,"select count(*) from %s where year(time) = %s and month(time) = %s "
+                        "and %s %s %f",table_name,year,month,dataT,"<",min );
+            count = getCountFromSql(sql);
+            std::cout<<"count:"<<count<<std::endl;
+            strcat(msg,int2str(count,strCount));
+            strcat(msg,"^");
+
+            sprintf(sql,"select count(*) from %s where year(time) = %s and month(time) = %s ",table_name,year,month );
+            count = getCountFromSql(sql);
+            std::cout<<"count:"<<count<<std::endl;
+            strcat(msg,int2str(count,strCount));
+            strcat(msg,"^");
+
+            strcat(msg,"$");
+
+        }
+        else if(strcmp(dateType,"year")==0)
+        {
+            char timesql[128];
+            char num[3];
+            //年份则需要获取各个月份的数据
+            for(int a=1;a<=12;a++){
+                sprintf(timesql,"year(time) = %s and month(time) = %s",year,int2str(a,num));
+
+                sprintf(sql,"select count(*) from %s where %s "
+                            "and %s %s %f",table_name,timesql,dataT,">",max );
+                int count;
+                char strCount[10];
+                count = getCountFromSql(sql);
+                std::cout<<"count:"<<count<<std::endl;
+                strcat(msg,int2str(count,strCount));
+                strcat(msg,"^");
+
+                sprintf(sql,"select count(*) from %s where %s "
+                            "and %s %s %f",table_name,timesql,dataT,"<",min );
+                count = getCountFromSql(sql);
+                std::cout<<"count:"<<count<<std::endl;
+                strcat(msg,int2str(count,strCount));
+                strcat(msg,"^");
+
+                sprintf(sql,"select count(*) from %s where  %s"
+                            ,table_name, timesql );
+                count = getCountFromSql(sql);
+                std::cout<<"count:"<<count<<std::endl;
+                strcat(msg,int2str(count,strCount));
+                strcat(msg,"^");
+
+                strcat(msg,"$");
+            }
+        }
+    }
+    else if(strcmp(showType,"control")==0)
+    {
+        //暂时不考虑
+        strcpy(table_name,"control_data");
+
+        if(strcmp(dateType,"day")==0)
+        {
+        }
+        else if(strcmp(dateType,"month")==0)
+        {
+        }
+        else if(strcmp(dateType,"year")==0)
+        {
+        }
+
+    }
+
+    strcat(msg,"#");
+    strcat(msg,"\0");
+}
+
+/**
+   * @函数意义:根据所给sql语句获取数量
+   * @作者:ZM
+   * @param [in] sql
+   *                       数据库语句
+   * @return int
+   *                返回数量
+   * @date 2018-3
+   */
+int DBManagement::getCountFromSql(const char *sql)
+{
+    std::cout<<sql<<std::endl;
+    mysql_real_query(&m_mysql,sql,(unsigned int) strlen(sql));
+    m_pRes = mysql_store_result(&m_mysql);
+    char count[10];
+    if(m_pRes)
+     {
+        int rowCount = mysql_num_rows(m_pRes);//行
+
+        if(rowCount!=0)
+        {
+            m_row = mysql_fetch_row(m_pRes);
+            strcpy(count,m_row[0]);
+        }
+     }
+    else
+    {
+        strcpy(count,"0");
+    }
+    mysql_free_result(m_pRes);
+
+    return atoi(count);
+}
+
+/**
    * @函数意义:更新用户登陆状态信息,主要用在用户登陆成功时和用户退出时
    * @作者:ZM
+   * @param [in] plat
+   *                平台,true为PC
    * @param [in] state
    *                用户状态
    * @date 2018-1
    */
-void DBManagement::updateUserLoginState(bool state)
+void DBManagement::updateUserLoginState(const bool plat,bool state)
 {
     char query[100];
-    sprintf(query,"update User set signup = %d where id = %d;",state,m_nUserID);
+    sprintf(query,"update User set %s = %d where id = %d;",plat?"signup_pc":"signup_android",
+                                                                                                    state,m_nUserID);
     mysql_real_query(&m_mysql,query,(unsigned int) strlen(query));
 }
 
@@ -350,30 +705,36 @@ void DBManagement::pagingQuery(char *returnData, char *sqlSelectCount, char *sql
 {
     int size=0;
     char query[150];
-    int count;
-    std::cout<<sqlSelectCount<<std::endl;
-    mysql_real_query(&m_mysql,sqlSelectCount,(unsigned int) strlen(sqlSelectCount));
+    int count=0;
+
+    //查找最新一条的数据
+    char q[100];
+    sprintf(q,"select * from boat_data order by id desc limit %d,%d",0,1);
+    mysql_real_query(&m_mysql,q,(unsigned int) strlen(q));
     m_pRes = mysql_store_result(&m_mysql);
     if(m_pRes)
      {
-        int rowCount = mysql_num_rows(m_pRes);//行
-
-        if(rowCount!=0)
+        int  iTableCol = mysql_num_fields(m_pRes);//列
+        m_row = mysql_fetch_row(m_pRes);
+        char *r;
+        for(int j=0; j<iTableCol; j++)
         {
-            m_row = mysql_fetch_row(m_pRes);
-            strcpy(returnData,m_row[0]);
-            size += strlen(m_row[0]);
-            returnData[size++] = '$';
-            count = string2int(m_row[0]);
+             r=m_row[j];
+             strcpy(returnData+size,r);
+             size += strlen(r);
+             returnData[size++] = '^';
         }
+        returnData[size++] = '$';
         mysql_free_result(m_pRes);
      }
-    else
-    {
-        returnData[size++] = '#';
-        returnData[size++] = '\0';
-        return;
-    }
+
+    //查找条数
+    count = getCountFromSql(sqlSelectCount);
+    char c[10];
+    int2str(count,c);
+    strcpy(returnData+size,c);
+    size += strlen(c);
+    returnData[size++] = '$';
 
     std::cout<<"count:"<<count<<std::endl;
 
@@ -490,9 +851,38 @@ void DBManagement::controlFlag(char *returnData, int &size)
     returnData[size++] = '$';
 }
 
+/**
+   * @函数意义:分割字符串
+   * @作者:ZM
+   * @param [in] str
+   *                        字符串
+   * @param [in] ch
+   *                        分隔符
+   * @return char *
+   *                返回字符串下一个开始
+   * @date 2018-3
+   */
+char * DBManagement::myStrsep(char *str, char ch)
+{
+    for(int a=0;a<strlen(str);a++)
+    {
+        if(str[a] == ch)
+        {
+            str[a] = '\0';
+            return str +a +1;
+        }
+    }
+    return str+strlen(str);
+}
+
 int DBManagement::nUserID() const
 {
     return m_nUserID;
+}
+
+void DBManagement::setUserID(int id)
+{
+    m_nUserID = id;
 }
 
 /**
@@ -500,9 +890,9 @@ int DBManagement::nUserID() const
    * @作者:ZM
    * @date 2018-1
    */
-void DBManagement::userLogout()
+void DBManagement::userLogout(const bool plat)
 {
-    updateUserLoginState(false);
+    updateUserLoginState(plat,false);
 }
 
 /**
@@ -516,7 +906,7 @@ bool DBManagement::checkAccountNumber(char *account)
 {
     char query[100];
     sprintf(query,"select * from User where accountNumber = '%s';",account);
-    std::cout<<query<<std::endl;
+   //std::cout<<query<<std::endl;
     mysql_real_query(&m_mysql,query,(unsigned int) strlen(query));
     m_pRes = mysql_store_result(&m_mysql);
     int rowCount;
@@ -530,6 +920,85 @@ bool DBManagement::checkAccountNumber(char *account)
         }
     }
     return true;
+}
+
+/**
+   * @函数意义:检查另一个平台的账号是否登陆了
+   * @作者:ZM
+   * @param [in] account
+   *                        帐号名
+   * @param [in] isPC
+   *                        是否是PC端,这个标识用来表示将要登陆的平台,所以判断的时候是反过来的
+   * @return int
+   *                        返回结果,如果存在则返回大于0的ID
+   * @date 2018-2
+   */
+int DBManagement::checkAnotherPlatformExits(const char *account, bool isPC)
+{
+    char query[100];
+    sprintf(query,"select * from User where accountNumber = '%s';",account);
+    std::cout<<query<<std::endl;
+
+    mysql_real_query(&m_mysql,query,(unsigned int) strlen(query));
+    m_pRes = mysql_store_result(&m_mysql);
+    int rowCount;
+    if(m_pRes)
+     {
+        rowCount = mysql_num_rows(m_pRes);//行
+
+        if(rowCount!=0)
+        {
+            m_row = mysql_fetch_row(m_pRes);
+            int userID = atoi(m_row[indexOfColumnName("id")]);
+            bool pc=*m_row[indexOfColumnName("signup_pc")];
+            bool android=*m_row[indexOfColumnName("signup_android")];
+            mysql_free_result(m_pRes);
+
+            if(isPC)
+                return android?userID:0;
+            else
+                return pc?userID:0;
+        }
+    }
+    return false;
+}
+
+/**
+   * @函数意义:这是一个重载函数,通过id判断是否存在
+   * @作者:ZM
+   * @param [in] id
+   *                        用户ID
+   * @param [in] isPC
+   *                        是否时PC平台
+   * @date 2018-3
+   */
+bool DBManagement::checkAnotherPlatformExits(int id,bool isPC)
+{
+    char query[100];
+    sprintf(query,"select * from User where id = '%d';",id);
+    //std::cout<<query<<std::endl;
+
+    mysql_real_query(&m_mysql,query,(unsigned int) strlen(query));
+    m_pRes = mysql_store_result(&m_mysql);
+    int rowCount;
+    if(m_pRes)
+     {
+        rowCount = mysql_num_rows(m_pRes);//行
+
+        if(rowCount!=0)
+        {
+            m_row = mysql_fetch_row(m_pRes);
+            bool pc=*m_row[indexOfColumnName("signup_pc")];
+            bool android=*m_row[indexOfColumnName("signup_android")];
+            mysql_free_result(m_pRes);
+
+            if(isPC)
+                return android;
+            else
+                return pc;
+        }
+    }
+    return false;
 }
 
 /**
@@ -548,6 +1017,25 @@ int DBManagement::string2int(char * str)
         num+=(str[m]-'0')*pow(10,n-m-1);
     }
     return num;
+}
+
+/**
+   * @函数意义:int 转为字符串
+   * @作者:ZM
+   * @param [in] int_temp
+   *                        将要转换的int
+   * @param [in] string_temp
+   *                        保存结果
+   * @param return
+   *                 返回string_temp地址
+   * @date 2018-1
+   */
+const char * DBManagement::int2str(const int &int_temp, char *string_temp)
+{
+        std::stringstream stream;
+        stream<<int_temp;
+        strcpy(string_temp,stream.str().c_str());
+        return string_temp;
 }
 
 /**

@@ -7,7 +7,10 @@ CONFIG -= qt
 SOURCES += main.cpp \
     TcpServer.cpp \
     DBManagement.cpp \
-    CThread.cpp
+    CThread.cpp \
+    SMTP.cpp \
+    HttpReq.cpp \
+    md5.cpp
 
 include(deployment.pri)
 qtcAddDeployment()
@@ -15,6 +18,9 @@ qtcAddDeployment()
 HEADERS += \
     TcpServer.h \
     DBManagement.h \
-    CThread.h
+    CThread.h \
+    SMTP.h \
+    HttpReq.h \
+    md5.h
 
 LIBS += -lpthread -lmysqlclient
